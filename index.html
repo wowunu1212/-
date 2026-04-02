@@ -75,7 +75,6 @@
 </div>
 
 <script>
-// https://script.google.com/macros/s/AKfycbzrPgsFkOORFnXzthANFH1GrS8Lns17btD3oeYZRmnQB-KYYUd6ik8AA7W5pT08nAOgMw/exec
 const GAS_URL = "https://script.google.com/macros/s/AKfycbzrPgsFkOORFnXzthANFH1GrS8Lns17btD3oeYZRmnQB-KYYUd6ik8AA7W5pT08nAOgMw/exec"; 
 
 let store = JSON.parse(localStorage.getItem("v6_data")) || [];
@@ -90,7 +89,11 @@ async function init() {
       const resp = await fetch(GAS_URL);
       const cloudData = await resp.json();
       if (cloudData && cloudData.length > 0) {
-        store = cloudData;
+        // 修正 1：確保雲端抓回來的日期格式正確，過濾掉 ISO 字串 (T...Z)
+        store = cloudData.map(item => ({
+          ...item,
+          date: item.date.includes('T') ? item.date.split('T')[0] : item.date
+        }));
         localStorage.setItem("v6_data", JSON.stringify(store));
         render();
       }
@@ -142,13 +145,16 @@ function render() {
 
   const groups = {};
   store.forEach(item => {
-    if (!groups[item.date]) groups[item.date] = { weightItem: null, list: [] };
-    if (item.type === 'weight') groups[item.date].weightItem = item;
-    else groups[item.date].list.push(item);
+    // 再次確保本地日期格式正確
+    const dKey = item.date.includes('T') ? item.date.split('T')[0] : item.date;
+    if (!groups[dKey]) groups[dKey] = { weightItem: null, list: [] };
+    if (item.type === 'weight') groups[dKey].weightItem = item;
+    else groups[dKey].list.push(item);
   });
 
   const weightHistory = store.filter(i => i.type === 'weight').sort((a, b) => new Date(a.date) - new Date(b.date));
-  const todayRecords = store.filter(i => i.date === today);
+  const todayRecords = store.filter(i => (i.date.includes('T') ? i.date.split('T')[0] : i.date) === today);
+  
   document.getElementById('dashIn').innerText = todayRecords.filter(i => i.type === 'food').reduce((s, i) => s + i.val, 0);
   document.getElementById('dashOut').innerText = todayRecords.filter(i => i.type === 'exe').reduce((s, i) => s + i.val, 0);
   document.getElementById('dashW').innerText = weightHistory.length ? weightHistory[weightHistory.length - 1].val + "kg" : "--";
@@ -188,16 +194,39 @@ function render() {
 }
 
 function updateChart(data) {
-  const ctx = document.getElementById('weightChart').getContext('2d');
+  const canvas = document.getElementById('weightChart');
+  const ctx = canvas.getContext('2d');
   if (chartInstance) chartInstance.destroy();
-  if (data.length < 2) return;
+  
+  // 修正 2：只要有一筆紀錄就畫圖，方便查看
+  if (data.length < 1) return;
+  
   chartInstance = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: data.slice(-14).map(d => d.date.slice(5)),
-      datasets: [{ label: '體重', data: data.slice(-14).map(d => d.val), borderColor: '#6366f1', fill: false, tension: 0.4 }]
+      labels: data.slice(-14).map(d => (d.date.includes('T') ? d.date.split('T')[0] : d.date).slice(5)),
+      datasets: [{ 
+        label: '體重', 
+        data: data.slice(-14).map(d => d.val), 
+        borderColor: '#6366f1', 
+        backgroundColor: 'rgba(99, 102, 241, 0.1)',
+        fill: true, 
+        tension: 0.4,
+        pointRadius: 6, // 點大一點比較好點擊和觀察
+        pointBackgroundColor: '#6366f1'
+      }]
     },
-    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+    options: { 
+      responsive: true, 
+      maintainAspectRatio: false, 
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { 
+          beginAtZero: false,
+          ticks: { stepSize: 0.5 }
+        }
+      }
+    }
   });
 }
 
@@ -206,7 +235,6 @@ function deleteItem(id) {
     store = store.filter(i => i.id !== id);
     localStorage.setItem("v6_data", JSON.stringify(store));
     render();
-    // 註：這裡暫不刪除雲端試算表內的資料以保安全，若需修改建議直接在試算表操作。
   }
 }
 
