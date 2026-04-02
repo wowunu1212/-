@@ -88,4 +88,206 @@
     </div>
     <div class="input-group" style="border-top: 1px dashed #eee; padding-top: 12px;">
       <div class="full"><label>🏃‍♂️ 運動項目</label><input type="text" id="mExe" placeholder="做了什麼運動？"></div>
-      <div class="full
+      <div class="full"><label>💦 運動消耗 (kcal)</label><input type="number" id="mOut" placeholder="消耗熱量"></div>
+    </div>
+    <button class="btn btn-save" id="btnSave" onclick="handleSave()">儲存並同步到雲端</button>
+    <button class="btn btn-excel" onclick="exportToExcel()">📊 匯出資料 (Excel)</button>
+  </div>
+  <div id="logContent"></div>
+</div>
+
+<script>
+// 請確保這行網址與你原本成功運行的 GAS 網址一致
+const GAS_URL = "https://script.google.com/macros/s/AKfycbzrPgsFkOORFnXzthANFH1GrS8Lns17btD3oeYZRmnQB-KYYUd6ik8AA7W5pT08nAOgMw/exec"; 
+const GOAL_WEIGHT = 85; 
+const START_WEIGHT = 110; 
+
+// 回到 v6_data 確保舊資料讀得到
+let store = JSON.parse(localStorage.getItem("v6_data")) || [];
+let chartInstance = null;
+
+// 時區校正：強制取得台灣日期 (UTC+8)
+function getTWDate() {
+    const now = new Date();
+    const twTime = new Date(now.getTime() + (8 * 60 * 60 * 1000));
+    return twTime.toISOString().split('T')[0];
+}
+
+document.getElementById('mDate').value = getTWDate();
+
+async function init() {
+  render();
+  if (GAS_URL.includes("https")) {
+    try {
+      const resp = await fetch(GAS_URL);
+      const cloudData = await resp.json();
+      if (cloudData && cloudData.length > 0) {
+        // 修正日期格式並過濾重複 ID
+        const processedCloud = cloudData.map(item => ({
+          ...item,
+          date: item.date.includes('T') ? item.date.split('T')[0] : item.date
+        }));
+        
+        const localIds = new Set(store.map(i => i.id));
+        const updates = processedCloud.filter(i => !localIds.has(i.id));
+        store = [...store, ...updates];
+        
+        localStorage.setItem("v6_data", JSON.stringify(store));
+        render();
+      }
+    } catch(e) { console.log("雲端同步中..."); }
+  }
+}
+
+async function addWater() {
+  const date = document.getElementById('mDate').value;
+  const item = { id: Date.now(), type: 'water', date, name: '喝水', val: 250 };
+  store.push(item);
+  localStorage.setItem("v6_data", JSON.stringify(store));
+  render();
+  try { fetch(GAS_URL, { method: "POST", mode: "no-cors", body: JSON.stringify(item) }); } catch(e) {}
+}
+
+async function handleSave() {
+  const btn = document.getElementById('btnSave');
+  const date = document.getElementById('mDate').value;
+  const weight = document.getElementById('mWeight').value;
+  const foodName = document.getElementById('mFood').value;
+  const calIn = document.getElementById('mIn').value;
+  const meal = document.getElementById('mMeal').value;
+  const exeName = document.getElementById('mExe').value;
+  const calOut = document.getElementById('mOut').value;
+
+  if (!weight && !foodName && !exeName) return alert("請輸入內容");
+
+  btn.disabled = true;
+  btn.innerText = "同步中...";
+
+  const nowId = Date.now();
+  const items = [];
+  if (weight) items.push({ id: nowId, type: 'weight', date, val: parseFloat(weight), name: '體重紀錄' });
+  if (foodName || calIn) items.push({ id: nowId + 1, type: 'food', date, meal, name: foodName || "飲食", val: parseInt(calIn) || 0 });
+  if (exeName || calOut) items.push({ id: nowId + 2, type: 'exe', date, name: exeName || "運動", val: parseInt(calOut) || 0 });
+
+  for (let item of items) {
+    store.push(item);
+    try { await fetch(GAS_URL, { method: "POST", mode: "no-cors", body: JSON.stringify(item) }); } catch(e) {}
+  }
+
+  localStorage.setItem("v6_data", JSON.stringify(store));
+  ["mWeight", "mFood", "mIn", "mExe", "mOut"].forEach(id => document.getElementById(id).value = "");
+  btn.disabled = false;
+  btn.innerText = "儲存並同步到雲端";
+  render();
+}
+
+function render() {
+  const container = document.getElementById('logContent');
+  container.innerHTML = "";
+  const today = getTWDate();
+
+  const groups = {};
+  store.forEach(item => {
+    const dKey = item.date.includes('T') ? item.date.split('T')[0] : item.date;
+    if (!groups[dKey]) groups[dKey] = { weightItem: null, list: [] };
+    if (item.type === 'weight') groups[dKey].weightItem = item;
+    else groups[dKey].list.push(item);
+  });
+
+  const weightHistory = store.filter(i => i.type === 'weight').sort((a, b) => new Date(a.date) - new Date(b.date));
+  const todayRecords = store.filter(i => (i.date.includes('T') ? i.date.split('T')[0] : i.date) === today);
+  
+  const currentW = weightHistory.length ? weightHistory[weightHistory.length - 1].val : null;
+  
+  document.getElementById('dashW').innerText = currentW ? currentW + "kg" : "--";
+  document.getElementById('dashGoal').innerText = GOAL_WEIGHT + "kg";
+  document.getElementById('dashWater').innerText = todayRecords.filter(i => i.type === 'water').reduce((s, i) => s + i.val, 0);
+  
+  if (currentW) {
+    const reduced = (START_WEIGHT - currentW).toFixed(1);
+    document.getElementById('dashReduced').innerText = (reduced > 0 ? reduced : 0) + "kg";
+    let prog = ((START_WEIGHT - currentW) / (START_WEIGHT - GOAL_WEIGHT) * 100).toFixed(0);
+    prog = Math.max(0, Math.min(100, prog));
+    document.getElementById('progressFill').style.width = prog + "%";
+    document.getElementById('goalPercent').innerText = prog + "%";
+  }
+
+  updateChart(weightHistory);
+
+  Object.keys(groups).sort((a, b) => new Date(b) - new Date(a)).forEach(date => {
+    const g = groups[date];
+    let diff = "";
+    if (g.weightItem) {
+      const idx = weightHistory.findIndex(i => i.id === g.weightItem.id);
+      if (idx > 0) {
+        const d = (g.weightItem.val - weightHistory[idx-1].val).toFixed(1);
+        diff = d > 0 ? `<span class="diff-up">▲${d}</span>` : `<span class="diff-down">▼${Math.abs(d)}</span>`;
+      }
+    }
+
+    let itemsHtml = g.list.map(i => {
+      let color = '#f59e0b';
+      if(i.type==='exe') color = '#10b981';
+      if(i.type==='water') color = '#3b82f6';
+      return `
+      <div class="entry">
+        <span><span class="tag" style="background:${color}">${i.type==='food' ? i.meal : (i.type==='water'?'飲水':'運動')}</span>${i.name}</span>
+        <span>${i.type==='food'?'+':(i.type==='water'?'':'-')}${i.val}${i.type==='water'?'ml':'k'} <button class="del-btn" onclick="deleteItem(${i.id})">✕</button></span>
+      </div>`}).join('');
+
+    if (g.weightItem) {
+      itemsHtml += `
+        <div class="entry" style="border-top: 1px dashed #eee; margin-top: 5px; padding-top: 8px; opacity: 0.8;">
+          <span><span class="tag" style="background:#6366f1">數據</span>當日體重紀錄</span>
+          <span>${g.weightItem.val}kg <button class="del-btn" onclick="deleteItem(${g.weightItem.id})">✕</button></span>
+        </div>`;
+    }
+
+    const card = document.createElement('div');
+    card.className = 'day-card';
+    card.innerHTML = `<div class="day-header"><span class="day-date">${date}</span><div class="weight-tag">${g.weightItem ? g.weightItem.val + ' kg ' + diff : '--'}</div></div>${itemsHtml}`;
+    container.appendChild(card);
+  });
+}
+
+function updateChart(data) {
+  const canvas = document.getElementById('weightChart');
+  const ctx = canvas.getContext('2d');
+  if (chartInstance) chartInstance.destroy();
+  if (data.length < 1) return;
+  chartInstance = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.slice(-14).map(d => (d.date.includes('T') ? d.date.split('T')[0] : d.date).slice(5)),
+      datasets: [{ 
+        label: '體重', 
+        data: data.slice(-14).map(d => d.val), 
+        borderColor: '#6366f1', 
+        backgroundColor: 'rgba(99, 102, 241, 0.1)',
+        fill: true, tension: 0.4, pointRadius: 6, pointBackgroundColor: '#6366f1'
+      }]
+    },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false, ticks: { stepSize: 0.5 } } } }
+  });
+}
+
+function deleteItem(id) {
+  if (confirm("刪除這筆紀錄？")) {
+    store = store.filter(i => i.id !== id);
+    localStorage.setItem("v6_data", JSON.stringify(store));
+    render();
+  }
+}
+
+function exportToExcel() {
+  const excelData = store.map(i => ({ "日期": i.date, "類型": i.type, "數值": i.val, "項目": i.name }));
+  const worksheet = XLSX.utils.json_to_sheet(excelData);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "健康紀錄");
+  XLSX.writeFile(workbook, "嘉恩紀錄.xlsx");
+}
+
+init();
+</script>
+</body>
+</html>
